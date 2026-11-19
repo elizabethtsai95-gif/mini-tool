@@ -8,9 +8,11 @@ that can be copied and pasted as values.
 """
 import html
 import io
+import json
 import math
 import re
 from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -21,14 +23,19 @@ from openpyxl.utils import get_column_letter
 st.set_page_config(page_title="MVP", page_icon="🏆", layout="wide")
 
 # ------------------------------------------------------------------ defaults
-# "Name on sheet = words to look for in the Sales Person column (separate with |)"
-DEFAULT_STAFF = """ELIZABETH = ELIZABETH
-LIM JUN MING = LIM JUN MING
-ELIZZA = ELIZZA
-SYAZWANI = SYAZWANI
-ELLYTHIA = ELLYTHIA
-SYUHADA = SYUHADA
-MELL = MELVIN|MELL"""
+# Starting point for the staff list (full name in the sales file, name on the sheet), in sheet order.
+# Anyone else found in the sales file is worked out by the page, and the list can be changed and saved.
+SEED_STAFF = [
+    ("ELIZABETH TSAI YEN PENG", "ELIZABETH"),
+    ("LIM JUN MING", "LIM JUN MING"),
+    ("ELIZZA ANAK VALENTINE", "ELIZZA"),
+    ("NUR SYAZWANI BINTI REDI", "SYAZWANI"),
+    ("ELLYTHIA NISHA ANAK SIGON", "ELLYTHIA"),
+    ("NURSYUHADA BINTI RIZALMAN", "SYUHADA"),
+    ("MELVIN CRIST ANAK ANOM", "MELL"),
+]
+STAFF_FILE = Path(__file__).resolve().parent.parent / "mvp_staff.json"
+NOT_STAFF = ("PHARMACY", "ALPRO", "ADMIN", "SYSTEM", "CASH", "ONLINE")
 
 DEFAULT_GROUPS = "100621259, 100621218, 100621234"
 DEFAULT_COMPULSORY = "100634849, 100079672, 100276807, 100290576"
@@ -80,17 +87,57 @@ def split_codes(text: str) -> list[str]:
     return [base_code(t) for t in re.split(r"[,\n/]", text) if t.strip()]
 
 
-def parse_staff(text: str) -> list[tuple[str, list[str]]]:
-    staff = []
-    for line in text.splitlines():
-        if not line.strip():
-            continue
-        label, _, kws = line.partition("=")
-        label = label.strip().upper()
-        keys = [k.strip().upper() for k in (kws or label).split("|") if k.strip()]
-        if label:
-            staff.append((label, keys))
-    return staff
+def default_label(full: str) -> str:
+    """Short name for the sheet: NUR SYAZWANI BINTI REDI -> SYAZWANI, ELIZABETH TSAI YEN PENG -> ELIZABETH."""
+    n = re.sub(r"\s+", " ", str(full).upper()).strip()
+    parts = re.split(r"\s(?:ANAK|BINTI|BIN|BT)\s", n, maxsplit=1)
+    base, had_particle = parts[0], len(parts) > 1
+    if base.startswith("NUR "):
+        base = base[4:]
+    elif base.startswith("NUR") and len(base.split()[0]) >= 9:  # NURSYUHADA, but not NURUL or NURAINI
+        base = base[3:]
+    words = base.split()
+    if not words:
+        return n
+    if had_particle:
+        return words[0]
+    return " ".join(words[:3]) if len(words[0]) <= 3 else words[0]
+
+
+def load_staff_file() -> dict:
+    try:
+        if STAFF_FILE.exists():
+            return json.loads(STAFF_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        pass
+    return {}
+
+
+def detect_staff(sales: pd.DataFrame) -> pd.DataFrame:
+    """Everyone in the Sales Person column, with a guess of who is staff and the name used on the sheet."""
+    names = sales["Sales Person"].dropna().astype(str).str.strip()
+    counts = names[names != ""].value_counts()
+    saved = load_staff_file()
+    if saved:
+        labels, known = saved.get("labels", {}), set(saved.get("known", []))
+        selected, order = set(saved.get("selected", [])), saved.get("order", {})
+    else:
+        labels = {f.upper(): l for f, l in SEED_STAFF}
+        known = set(labels)
+        selected = set(labels)
+        order = {f.upper(): i + 1 for i, (f, _) in enumerate(SEED_STAFF)}
+    top = int(counts.max()) if len(counts) else 0
+    rows = []
+    for name, n in counts.items():
+        up = name.upper()
+        if up in known:
+            use = up in selected
+        else:  # new name: staff if they sell a fair share of what the busiest person sells
+            use = n >= 0.25 * top and not any(w in up for w in NOT_STAFF)
+        rows.append({"Use": use, "Order": order.get(up, 100 + len(rows)), "Name in sales file": name,
+                     "Name on sheet": labels.get(up) or default_label(up), "Sales lines": int(n)})
+    df = pd.DataFrame(rows)
+    return df.sort_values(["Use", "Order", "Sales lines"], ascending=[False, True, False]).reset_index(drop=True)
 
 
 def read_mvp(file) -> pd.DataFrame:
@@ -469,9 +516,6 @@ st.caption("Upload the MVP SKU list and the sale invoice item export. The page s
 
 with st.sidebar:
     st.header("Settings")
-    staff_text = st.text_area("Staff (Name on sheet = words in the Sales Person column)", DEFAULT_STAFF, height=190,
-                              help="One staff per line. Separate several words with |. Sales by anyone not listed "
-                                   "go to the Others row.")
     block_size = st.number_input("Items per block (across the sheet)", min_value=1, max_value=20, value=8, step=1)
     round_up = st.checkbox("Round each staff's target up to a whole unit", False,
                            help="Off: the target is shared exactly (for example 4 ÷ 7 = 0.57 each).")
@@ -527,10 +571,43 @@ if missing:
     st.error(f"Missing column(s) in the sales file: {', '.join(missing)}. Please upload the original export.")
     st.stop()
 
-staff = parse_staff(staff_text)
+staff_df = detect_staff(sales)
+with st.expander("Staff (found in the sales file)", expanded=True):
+    st.caption("Tick the people who share the targets. Change Order to match your sheet, and edit Name on sheet. "
+               "Everyone not ticked goes to the Others row.")
+    edited = st.data_editor(
+        staff_df, hide_index=True, use_container_width=True,
+        disabled=["Name in sales file", "Sales lines"],
+        column_config={
+            "Use": st.column_config.CheckboxColumn("Use"),
+            "Order": st.column_config.NumberColumn("Order", min_value=1, step=1, format="%d"),
+            "Name on sheet": st.column_config.TextColumn("Name on sheet"),
+        },
+        key="staff_" + str(abs(hash(tuple(staff_df["Name in sales file"])))),
+    )
+    if st.button("Save this staff list for next time"):
+        try:
+            STAFF_FILE.write_text(json.dumps({
+                "labels": {n.upper(): l.strip().upper() for n, l in zip(edited["Name in sales file"], edited["Name on sheet"])},
+                "known": [n.upper() for n in edited["Name in sales file"]],
+                "selected": [n.upper() for n, u in zip(edited["Name in sales file"], edited["Use"]) if u],
+                "order": {n.upper(): int(o) for n, o in zip(edited["Name in sales file"], edited["Order"])},
+            }, indent=1), encoding="utf-8")
+            st.success("Saved for everyone who uses this page.")
+        except OSError as e:
+            st.error(f"Could not save: {e}")
+
+chosen = edited[edited["Use"] & (edited["Name on sheet"].astype(str).str.strip() != "")].sort_values(
+    "Order", kind="stable")
+staff = [(str(lab).strip().upper(), [str(full).strip().upper()])
+         for lab, full in zip(chosen["Name on sheet"], chosen["Name in sales file"])]
 if not staff:
-    st.error("Add at least one staff in the sidebar.")
+    st.error("Tick at least one staff in the list above.")
     st.stop()
+if len({l for l, _ in staff}) < len(staff):
+    st.error("Two staff have the same Name on sheet. Please give each a different name.")
+    st.stop()
+st.caption(f"{len(staff)} staff share the targets: " + ", ".join(l for l, _ in staff) + ".")
 
 s_prep = prepare_sales(sales, staff)
 matches = build_matches(mvp, s_prep, include_variants)
