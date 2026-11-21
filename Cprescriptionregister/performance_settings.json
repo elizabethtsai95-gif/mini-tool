@@ -1,0 +1,31 @@
+{
+ "outlet": "QKCMC1",
+ "sale_target": 356750.0,
+ "profit_target": 115000.0,
+ "basis": "Profit (GP)",
+ "ratio_pharmacist": 1.5,
+ "ratio_ha": 1.0,
+ "w_sales": 25,
+ "w_gp": 25,
+ "w_pl": 25,
+ "w_pp": 25,
+ "pl_target": 40.0,
+ "pp_target": 55.0,
+ "cap": false,
+ "prorate": true,
+ "roles": {
+  "ELIZABETH TSAI YEN PENG": "Pharmacist",
+  "LIM JUN MING": "Pharmacist",
+  "ELIZZA ANAK VALENTINE": "HA",
+  "NUR SYAZWANI BINTI REDI": "HA",
+  "ELLYTHIA NISHA ANAK SIGON": "HA",
+  "NURSYUHADA BINTI RIZALMAN": "HA",
+  "MELVIN CRIST ANAK ANOM": "HA",
+  "WINNA LOW PEI JIA": "HA",
+  "HO HUI SAN": "HA",
+  "SHIRELY NGU KWONG LIM": "HA",
+  "DEBRA TAN YUIN YUIN": "HA",
+  "ALPRO PHARMACY": "HA",
+  "NUR ILYANA FADZLIN BINTI MOHD ZAMRI": "HA"
+ }
+}
